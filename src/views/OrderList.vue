@@ -76,7 +76,7 @@
                 <!-- 多商品评价入口 -->
                 <div v-if="order.status === 4 && order.items?.length > 1" class="multi-item-review">
                   <el-button 
-                    v-if="!item.returnOrder" 
+                    v-if="!item.returnOrder && canApplyReturn(order)"
                     type="danger" 
                     plain 
                     @click.stop="applyRefund(order, item)"
@@ -177,7 +177,7 @@
                 <!-- 已完成状态：单商品评价入口 -->
                 <template v-if="order.status === 4 && order.items?.length === 1">
                   <el-button 
-                    v-if="!order.items[0].returnOrder" 
+                    v-if="!order.items[0].returnOrder && canApplyReturn(order)"
                     type="danger" 
                     plain 
                     @click="applyRefund(order, order.items[0])"
@@ -501,13 +501,20 @@ const confirmReceipt = async (order) => {
 
 const handlePay = async (order) => {
   try {
+    await ElMessageBox.confirm(
+      '当前项目使用支付宝沙箱用于模拟支付场景，请勿使用真实支付宝支付！',
+      '提示',
+      { confirmButtonText: '确认', type: 'warning' }
+    )
     const html = await paymentApi.pay(order.id)
     const div = document.createElement('div')
     div.innerHTML = html
     document.body.appendChild(div)
     div.querySelector('form').submit()
   } catch (error) {
-    ElMessage.error('支付跳转失败')
+    if (error !== 'cancel') {
+      ElMessage.error('支付跳转失败')
+    }
   }
 }
 
@@ -547,6 +554,13 @@ const handleViewOrderReviews = (order) => {
     // 多个或者没有评价ID，去详情页
     router.push({ path: `/order/${order.id}`, query: { status: tabStatusMap[activeTab] } })
   }
+}
+
+// 与后端一致：完成后七天内可申请退货。
+const canApplyReturn = (order) => {
+  if (!order?.completeTime) return false
+  const completedAt = new Date(order.completeTime).getTime()
+  return Number.isFinite(completedAt) && Date.now() <= completedAt + 7 * 24 * 60 * 60 * 1000
 }
 
 // 申请退款
@@ -683,7 +697,7 @@ watch(activeTab, () => {
 
 <style scoped>
 .orders-page {
-  padding: 40px 0 60px;
+  padding: 0 0 60px;
 }
 
 /* 限制上传文件名称长度 */

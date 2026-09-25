@@ -51,6 +51,16 @@
       </div>
     </header>
 
+    <!-- 警告提示横幅 -->
+    <div class="warning-banner">
+      <div class="warning-marquee">
+        <span class="warning-icon">⚠️</span>
+        <span class="warning-text">本系统为个人开发的学习与求职展示的项目，所有商品、订单、支付数据均为模拟数据，不会产生真实交易行为，也不会发货</span>
+        <span class="warning-icon">⚠️</span>
+        <span class="warning-text">本系统为个人开发的学习与求职展示的项目，所有商品、订单、支付数据均为模拟数据，不会产生真实交易行为，也不会发货</span>
+      </div>
+    </div>
+
     <!-- 页面内容 -->
     <main class="page-content">
       <router-view />
@@ -242,8 +252,49 @@ onUnmounted(() => {
   width: 100%;
   max-width: var(--layout-max-width, 1440px);
   margin: 0 auto;
-  padding: 30px 40px;
+  padding: 12px 40px 30px;
   background: var(--bg-base);
+}
+
+/* Warning Banner */
+.warning-banner {
+  position: sticky;
+  top: var(--nav-height, 64px);
+  z-index: 999;
+  background: #fdf6ec;
+  border-bottom: 1px solid #faecd8;
+  overflow: hidden;
+  height: 36px;
+  display: flex;
+  align-items: center;
+}
+
+.warning-marquee {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  animation: scroll-left 35s linear infinite;
+}
+
+.warning-icon {
+  margin: 0 8px;
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.warning-text {
+  font-size: 14px;
+  color: #e6a23c;
+  padding-right: 32px;
+}
+
+@keyframes scroll-left {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
 }
 
 .footer {

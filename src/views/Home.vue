@@ -301,7 +301,7 @@ onMounted(() => {
   flex-direction: column;
   align-items: center;
   gap: 10px;
-  margin: 40px 0 30px;
+  margin: 0 0 30px;
 }
 
 .search-wrapper {

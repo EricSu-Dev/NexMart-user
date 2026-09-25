@@ -183,9 +183,13 @@
               </div>
             </div>
           </div>
+          <div v-if="previewError" class="preview-error">
+            价格计算失败，请重试后再提交。
+            <el-button link type="primary" @click="fetchPricePreview">重新计算</el-button>
+          </div>
           <el-button
             type="primary" size="large" class="submit-btn"
-            :loading="submitting" @click="submitOrder"
+            :loading="submitting || previewLoading" :disabled="previewLoading || previewError || !previewReady" @click="submitOrder"
           >提交订单</el-button>
         </div>
       </div>
@@ -360,6 +364,10 @@ const selectedOrderCoupon = ref(null)
 const selectedProductCouponsMap = ref({})
 const showCouponDialog = ref(false)
 const couponLoading = ref(false)
+const previewLoading = ref(false)
+const previewError = ref(false)
+const previewReady = ref(false)
+let previewRequestVersion = 0
 const couponDialogMode = ref('order') // 'order' | 'product'
 const currentProductItemId = ref(null)
 
@@ -634,6 +642,10 @@ const clearSelectedProductCoupon = (itemId) => {
 
 // 核心价格预检接口
 const fetchPricePreview = async () => {
+  const requestVersion = ++previewRequestVersion
+  previewLoading.value = true
+  previewError.value = false
+  previewReady.value = false
   try {
     const productCouponMap = {}
     Object.entries(selectedProductCouponsMap.value).forEach(([id, c]) => {
@@ -647,8 +659,10 @@ const fetchPricePreview = async () => {
     }
 
     const res = await orderApi.preview(payload)
+    if (requestVersion !== previewRequestVersion) return
     if (res.code === 200) {
       previewData.value = res.data
+      previewReady.value = true
       
       // 业务逻辑补充：如果当前有了活动优惠且已经选了订单券，需要考虑撤销选中的订单券（取决于后端是否强制）
       // 这里根据规则，如果 previewData.promotionTotalDiscount > 0 且 selectedOrderCoupon 存在，则清空
@@ -657,9 +671,16 @@ const fetchPricePreview = async () => {
         // 重新请求一次以确保计算正确
         fetchPricePreview()
       }
+    } else {
+      previewError.value = true
     }
   } catch (error) {
-    console.error('价格重算失败:', error)
+    if (requestVersion === previewRequestVersion) {
+      previewError.value = true
+      console.error('价格重算失败:', error)
+    }
+  } finally {
+    if (requestVersion === previewRequestVersion) previewLoading.value = false
   }
 }
 
@@ -814,6 +835,7 @@ const saveNewAddress = async () => {
 }
 
 const submitOrder = async () => {
+  if (submitting.value || previewLoading.value || previewError.value || !previewReady.value) return
   try {
     if (formRef.value) {
       await formRef.value.validate()

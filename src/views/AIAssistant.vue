@@ -11,6 +11,7 @@
         link 
         type="info" 
         :icon="Delete" 
+        :disabled="isSending"
         @click="handleClearHistory"
         class="clear-btn"
       >
@@ -39,7 +40,7 @@
         </div>
         <div class="bubble-content">
           <div class="bubble">
-            <div class="text-inner" v-html="formatMessage(msg.content)"></div>
+            <div class="text-inner">{{ msg.content }}</div>
           </div>
         </div>
       </div>
@@ -65,6 +66,8 @@
         <el-input
           v-model="inputText"
           placeholder="输入您的问题..."
+          maxlength="500"
+          show-word-limit
           :disabled="isSending"
           @keyup.enter="handleSend"
           resize="none"
@@ -88,51 +91,93 @@
 
 <script setup>
 import { ref, nextTick, onMounted, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { ChatLineRound, Promotion, Delete } from '@element-plus/icons-vue'
 import { useUserStore } from '@/stores/user'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '@/utils/request'
 
+const router = useRouter()
 const userStore = useUserStore()
 const inputText = ref('')
 const isSending = ref(false)
 const isTyping = ref(false)
 const messages = ref([])
 const messageListRef = ref(null)
+let activeController = null
+let historyVersion = 0
+let mounted = false
+let historyLoaded = false
+let lastKnownHistoryId = 0
 
-// 自动滚动到底部
 const scrollToBottom = async () => {
   await nextTick()
   if (messageListRef.value) {
-    messageListRef.value.scrollTo({
-      top: messageListRef.value.scrollHeight,
-      behavior: 'smooth'
-    })
+    messageListRef.value.scrollTo({ top: messageListRef.value.scrollHeight, behavior: 'smooth' })
   }
 }
 
-// 格式化消息内容 (支持简单换行等)
-const formatMessage = (content) => {
-  if (!content) return ''
-  return content.replace(/\n/g, '<br>')
+const showHistory = async (items) => {
+  const ordered = [...items].sort((a, b) => Number(a.id) - Number(b.id))
+  lastKnownHistoryId = ordered.reduce((max, item) => Math.max(max, Number(item.id) || 0), 0)
+  messages.value = ordered.map(item => ({
+    role: item.role === 2 ? 'ai' : 'user',
+    content: (item.content || '').replace(/\[DONE\]/g, '')
+  }))
+  await scrollToBottom()
+}
+
+const fetchSavedHistory = async (timeoutMs = 5000) => {
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const response = await fetch('/api/ai/chat/history', {
+      headers: { Authorization: `Bearer ${userStore.token}` },
+      signal: controller.signal
+    })
+    if (!response.ok) return null
+    const result = await response.json()
+    return result.code === 200 && Array.isArray(result.data)
+      ? result.data.sort((a, b) => Number(a.id) - Number(b.id)) : null
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
+const recoverSavedReply = async (question, previousId, version) => {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (!mounted || historyVersion !== version) return false
+    const items = await fetchSavedHistory()
+    if (items?.length >= 2) {
+      const [savedQuestion, savedAnswer] = items.slice(-2)
+      if (savedQuestion.role === 1 && savedQuestion.content === question &&
+          savedAnswer.role === 2 && Number(savedQuestion.id) > previousId) {
+        if (!mounted || historyVersion !== version) return false
+        await showHistory(items)
+        return true
+      }
+    }
+    if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 750))
+  }
+  return false
 }
 
 const handleClearHistory = () => {
-  ElMessageBox.confirm(
-    '确认要清空与 AI 助手的聊天历史吗？该操作不可撤销。',
-    '提示',
-    {
-      confirmButtonText: '确定',
-      cancelButtonText: '取消',
-      type: 'warning',
-    }
-  ).then(async () => {
+  ElMessageBox.confirm('确认要清空与 AI 助手的聊天历史吗？该操作不可撤销。', '提示', {
+    confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning'
+  }).then(async () => {
+    activeController?.abort()
+    historyVersion++
     try {
       await request.delete('/ai/chat/history')
       messages.value = []
+      lastKnownHistoryId = 0
+      historyLoaded = true
       ElMessage.success('聊天记录已清空')
     } catch (error) {
-      // request helper handled message already
+      ElMessage.error('清空历史失败，请重试')
     }
   }).catch(() => {})
 }
@@ -140,145 +185,160 @@ const handleClearHistory = () => {
 const handleSend = async () => {
   const text = inputText.value.trim()
   if (!text || isSending.value) return
+  if (!userStore.isLoggedIn) {
+    router.push('/login')
+    return
+  }
 
-  // 添加用户消息
+  const version = ++historyVersion
+  const previousHistoryId = lastKnownHistoryId
+  const canRecover = historyLoaded
   messages.value.push({ role: 'user', content: text })
   inputText.value = ''
   isSending.value = true
   isTyping.value = true
   await scrollToBottom()
 
+  const controller = new AbortController()
+  activeController = controller
+  let timeoutId = null
+  let timedOut = false
   let aiMsgIndex = -1
+  let completed = false
+  let streamStarted = false
+  const resetTimeout = (delay = 45000) => {
+    clearTimeout(timeoutId)
+    timeoutId = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, delay)
+  }
+
+  const processEvent = (block) => {
+    const lines = block.split(/\r?\n/)
+      .filter(line => line.startsWith('data:'))
+      .map(line => line.slice(5).replace(/^ /, ''))
+    if (lines.length === 0) return false
+    const raw = lines.join('\n')
+    let content = raw
+    try {
+      const decoded = JSON.parse(raw)
+      if (typeof decoded === 'string') content = decoded
+    } catch {
+      // Allow plain SSE text during a rolling backend update.
+    }
+    if (content === '[DONE]') return true
+    if (content === '[ERROR]') throw new Error('AI 回复中断，请重试')
+    if (aiMsgIndex === -1) {
+      isTyping.value = false
+      aiMsgIndex = messages.value.length
+      messages.value.push({ role: 'ai', content: '' })
+    }
+    messages.value[aiMsgIndex].content += content
+    scrollToBottom()
+    return false
+  }
 
   try {
-    const token = localStorage.getItem('nexmart_token')
-    const url = `/api/ai/chat?message=${encodeURIComponent(text)}`
-    
-    const response = await fetch(url, {
-      method: 'GET',
+    resetTimeout(30000)
+    const response = await fetch('/api/ai/chat', {
+      method: 'POST',
       headers: {
-        'Authorization': token ? `Bearer ${token}` : ''
-      }
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${userStore.token}`
+      },
+      body: JSON.stringify({ message: text }),
+      signal: controller.signal
     })
-
-    if (!response.ok) {
-      throw new Error('网络异常，请稍后再试')
+    if (response.status === 401) {
+      userStore.logout()
+      router.push('/login')
+      throw new Error('登录已过期，请重新登录')
     }
+    if (response.status === 429) throw new Error('提问过于频繁，请稍后再试')
+    if (!response.ok || !response.body || !response.headers.get('content-type')?.includes('text/event-stream')) {
+      throw new Error('AI 服务暂时不可用，请稍后重试')
+    }
+    streamStarted = true
 
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
-
-    // 处理消息行的闭包，减少重复代码
-    const processDataLine = (line) => {
-      const trimmedLine = line.trim()
-      if (!trimmedLine || !trimmedLine.startsWith('data:')) return false
-      
-      const content = trimmedLine.replace(/^data:\s?/, '')
-      if (content.trim() === '[DONE]') return true
-
-      // 首次收到有效数据时，隐藏加载动画并显示 AI 消息气泡
-      if (aiMsgIndex === -1) {
-        isTyping.value = false
-        aiMsgIndex = messages.value.length
-        messages.value.push({ role: 'ai', content: '' })
-      }
-      
-      if (aiMsgIndex !== -1) {
-        messages.value[aiMsgIndex].content += content
-        scrollToBottom()
-      }
-      return false
-    }
-
-    // 持续读取流
-    const timeoutSeconds = 15 // 15秒无响应自动断开保护
-    let timeoutId = null
-
-    const resetTimeout = () => {
-      if (timeoutId) clearTimeout(timeoutId)
-      timeoutId = setTimeout(() => {
-        console.warn('AI 响应超时，强制结束')
-        // 如果卡在 reader.read()，我们没法直接中断它，但我们可以强制进入 finally 并解锁 UI
-        throw new Error('AI 响应超时，请稍后再试')
-      }, timeoutSeconds * 1000)
-    }
-
-    resetTimeout()
-
     while (true) {
       const { done, value } = await reader.read()
-      resetTimeout() // 每次有新数据都重置超时
-
-      if (value) {
+      if (done) {
+        buffer += decoder.decode()
+      } else {
+        resetTimeout()
         buffer += decoder.decode(value, { stream: true })
-        
-        // 循环处理缓冲区中的完整行
-        let lineEndIndex
-        while ((lineEndIndex = buffer.indexOf('\n')) !== -1) {
-          const line = buffer.slice(0, lineEndIndex)
-          buffer = buffer.slice(lineEndIndex + 1)
-          if (processDataLine(line)) {
-            if (timeoutId) clearTimeout(timeoutId)
-            return 
-          }
-        }
-
-        // 安全检查：如果缓冲区中已经包含了 [DONE]，即使没有换行符也提前处理
-        if (buffer.includes('[DONE]')) {
-          const doneIndex = buffer.indexOf('[DONE]')
-          const beforeDone = buffer.slice(0, doneIndex)
-          if (beforeDone.includes('data:')) {
-             processDataLine(beforeDone)
-          }
-          if (timeoutId) clearTimeout(timeoutId)
-          return
+      }
+      let boundary
+      while ((boundary = buffer.search(/\r?\n\r?\n/)) !== -1) {
+        const block = buffer.slice(0, boundary)
+        const separator = buffer.slice(boundary).match(/^\r?\n\r?\n/)[0]
+        buffer = buffer.slice(boundary + separator.length)
+        if (processEvent(block)) {
+          completed = true
+          break
         }
       }
-
+      if (completed) break
       if (done) {
-        if (timeoutId) clearTimeout(timeoutId)
-        // 流结束后的最后处理：处理缓冲区残留内容
-        if (buffer.trim()) {
-          processDataLine(buffer)
-        }
+        if (buffer.trim() && processEvent(buffer)) completed = true
         break
       }
     }
+    if (!completed) throw new Error('AI 回复中断，请重试')
+    const savedHistory = await fetchSavedHistory(3000)
+    historyLoaded = Array.isArray(savedHistory)
+    if (historyLoaded) {
+      lastKnownHistoryId = savedHistory.reduce((max, item) => Math.max(max, Number(item.id) || 0), 0)
+    }
   } catch (error) {
-    console.error('AI Chat Error:', error)
-    if (error.name !== 'AbortError') {
-      ElMessage.error(error.message || '获取 AI 响应失败')
-      if (aiMsgIndex === -1) {
-        messages.value.push({ role: 'ai', content: '抱歉，目前服务遇到一点问题，请稍后再试。' })
+    if (mounted && (!controller.signal.aborted || timedOut)) {
+      const recovered = streamStarted && canRecover &&
+        await recoverSavedReply(text, previousHistoryId, version)
+      if (!recovered) {
+        ElMessage.error(timedOut ? 'AI 响应超时，请重试' : error.message || '获取 AI 回复失败')
+        if (aiMsgIndex === -1) {
+          messages.value.push({ role: 'ai', content: '抱歉，本次回复失败，请稍后重试。' })
+        } else if (!messages.value[aiMsgIndex].content.includes('[回复中断或历史保存失败')) {
+          messages.value[aiMsgIndex].content += '\n\n[回复中断，请重试]'
+        }
       }
     }
   } finally {
-    // 强制恢复状态，确保 UI 解锁
-    isTyping.value = false
-    isSending.value = false
-    await scrollToBottom()
+    clearTimeout(timeoutId)
+    if (activeController === controller) activeController = null
+    if (mounted) {
+      isTyping.value = false
+      isSending.value = false
+      await scrollToBottom()
+    }
   }
 }
 
 const loadHistory = async () => {
+  const version = historyVersion
   try {
     const res = await request.get('/ai/chat/history')
-    if (res.data && Array.isArray(res.data)) {
-      // 后端 role: 1 为用户, 2 为 AI
-      messages.value = res.data.map(item => ({
-        role: item.role === 2 ? 'ai' : 'user',
-        content: item.content
-      }))
-      await scrollToBottom()
+    if (mounted && version === historyVersion && Array.isArray(res.data)) {
+      await showHistory(res.data)
+      historyLoaded = true
     }
   } catch (error) {
     console.error('获取历史记录失败:', error)
+    historyLoaded = false
   }
 }
 
 onMounted(() => {
+  mounted = true
   loadHistory()
+})
+onUnmounted(() => {
+  mounted = false
+  activeController?.abort()
 })
 </script>
 
@@ -329,6 +389,7 @@ onMounted(() => {
 }
 
 .clear-btn {
+  margin-left: auto;
   color: #94a3b8;
   transition: all 0.3s;
 }

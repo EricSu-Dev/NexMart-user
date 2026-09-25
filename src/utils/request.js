@@ -1,6 +1,7 @@
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import router from '@/router'
+import { useUserStore } from '@/stores/user'
 
 const request = axios.create({
   baseURL: '/api',
@@ -45,10 +46,8 @@ request.interceptors.response.use(
     const status = error.response?.status
     if (status === 401) {
       ElMessage.warning({ message: '登录已过期，请重新登录', duration: 1500 })
-      // 直接清除localStorage中的token
-      localStorage.removeItem('nexmart_token')
-      localStorage.removeItem('nexmart_user')
-      router.push('/login')
+      useUserStore().logout()
+      if (router.currentRoute.value.path !== '/login') router.push('/login')
     } else if (status === 403) {
       ElMessage.error({ message: '无权限访问', duration: 1500 })
     } else {

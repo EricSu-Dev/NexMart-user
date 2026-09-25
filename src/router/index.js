@@ -143,7 +143,7 @@ const routes = [
         path: 'ai-assistant',
         name: 'AIAssistant',
         component: () => import('@/views/AIAssistant.vue'),
-        meta: { title: 'AI 小助手' }
+        meta: { title: 'AI 小助手', requireAuth: true }
       },
       {
         path: 'coupon/center',
@@ -190,7 +190,7 @@ const routes = [
 ]
 
 const router = createRouter({
-  history: createWebHistory(),
+  history: createWebHistory('/user/'),
   routes,
   scrollBehavior: () => ({ top: 0 })
 })

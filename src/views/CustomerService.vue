@@ -615,8 +615,7 @@ const legacyHandleImageChange = async (event) => {
       }
     }
 
-    if (uploadedUrls.length > 0) {
-      sendImageMessage(uploadedUrls)
+    if (uploadedUrls.length > 0 && sendImageMessage(uploadedUrls)) {
       ElMessage.success(`成功发送${uploadedUrls.length}张图片`)
     }
   } catch (error) {
@@ -883,12 +882,13 @@ const initSession = async () => {
 }
 
 const sendSocketMessage = (messageData, localMessage) => {
-  messages.value.push(localMessage)
-  scrollToBottom()
-
   if (!csStore.sendWsMessage(messageData)) {
     ElMessage.error('消息发送失败，请稍后重试')
+    return false
   }
+  messages.value.push(localMessage)
+  scrollToBottom()
+  return true
 }
 
 const sendMessage = () => {
@@ -919,8 +919,7 @@ const sendMessage = () => {
     createdAt: new Date().toISOString()
   }
 
-  sendSocketMessage(messageData, localMessage)
-  inputMessage.value = ''
+  if (sendSocketMessage(messageData, localMessage)) inputMessage.value = ''
 }
 
 const handleImageChange = async (event) => {
@@ -954,8 +953,7 @@ const handleImageChange = async (event) => {
       }
     }
 
-    if (uploadedUrls.length > 0) {
-      sendImageMessage(uploadedUrls)
+    if (uploadedUrls.length > 0 && sendImageMessage(uploadedUrls)) {
       ElMessage.success(`成功发送 ${uploadedUrls.length} 张图片`)
     }
   } catch (error) {
@@ -992,7 +990,7 @@ const sendImageMessage = (imageUrls) => {
     createdAt: new Date().toISOString()
   }
 
-  sendSocketMessage(messageData, localMessage)
+  return sendSocketMessage(messageData, localMessage)
 }
 
 const handleSelectProduct = () => {

@@ -226,7 +226,7 @@ export const useCustomerServiceStore = defineStore('customerService', () => {
         if (!currentSessionId.value) {
           await initSession()
         }
-        connectWebSocket(currentSessionId.value)
+        await connectWebSocket(currentSessionId.value)
       } catch (error) {
         console.error('Failed to reconnect customer service websocket:', error)
         scheduleReconnect()
@@ -234,7 +234,7 @@ export const useCustomerServiceStore = defineStore('customerService', () => {
     }, RECONNECT_DELAY)
   }
 
-  function connectWebSocket(sessionId = currentSessionId.value) {
+  async function connectWebSocket(sessionId = currentSessionId.value) {
     const userId = getUserId()
     if (!userId) {
       return null
@@ -252,7 +252,16 @@ export const useCustomerServiceStore = defineStore('customerService', () => {
     manualClose = false
     clearReconnectTimer()
 
-    const ws = new WebSocket(`ws://localhost:8087/ws/cs/websocket?userId=${userId}&role=ROLE_USER`)
+    let data
+    try {
+      ({ data } = await customerServiceApi.getWebSocketTicket())
+    } catch (error) {
+      console.error('Failed to get customer service websocket ticket:', error)
+      scheduleReconnect()
+      return null
+    }
+    if (manualClose || socket.value) return null
+    const ws = new WebSocket(`wss://nexmart.tech/ws/cs/websocket?ticket=${encodeURIComponent(data.ticket)}`)
     socket.value = ws
 
     ws.onopen = () => {

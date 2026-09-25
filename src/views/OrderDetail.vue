@@ -349,13 +349,20 @@ const loadOrder = async () => {
 
 const handlePay = async () => {
   try {
+    await ElMessageBox.confirm(
+      '当前项目使用支付宝沙箱用于模拟支付场景，请勿使用真实支付宝支付！',
+      '提示',
+      { confirmButtonText: '确认', type: 'warning' }
+    )
     const html = await paymentApi.pay(order.value.id)
     const div = document.createElement('div')
     div.innerHTML = html
     document.body.appendChild(div)
     div.querySelector('form').submit()
   } catch (error) {
-    ElMessage.error('支付跳转失败')
+    if (error !== 'cancel') {
+      ElMessage.error('支付跳转失败')
+    }
   }
 }
 
@@ -394,13 +401,9 @@ const getReturnStatusType = (status) => {
 
 // 判断是否可以申请退货（7天内）
 const canApplyReturn = (item) => {
-  if (!order.value || !order.value.createdAt) return false
-  
-  const orderTime = new Date(order.value.createdAt)
-  const now = new Date()
-  const daysDiff = (now - orderTime) / (1000 * 60 * 60 * 24)
-  
-  return daysDiff <= 7
+  if (!order.value?.completeTime) return false
+  const completedAt = new Date(order.value.completeTime).getTime()
+  return Number.isFinite(completedAt) && Date.now() <= completedAt + 7 * 24 * 60 * 60 * 1000
 }
 
 // 申请退货

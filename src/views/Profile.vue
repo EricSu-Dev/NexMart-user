@@ -138,7 +138,7 @@ const handleLogout = async () => {
 
 <style scoped>
 .user-center-page {
-  padding: 40px 0 60px;
+  padding: 0 0 60px;
 }
 
 .page-container {
